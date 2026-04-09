@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import string
 
 import streamlit as st
@@ -24,24 +25,18 @@ def _letters_a_to_z(raw: str) -> list[str]:
     return [c.upper() for c in raw if c.upper() in string.ascii_uppercase]
 
 
-def _render_pokemon_matches(matches: list[dict[str, str]], max_height_px: int) -> None:
-    """Scrollable list: hovering a row zooms artwork and name (CSS in iframe)."""
-    rows: list[str] = []
-    for r in matches:
-        label = html.escape(_display_name(r["name"]))
-        src = html.escape(r["sprite_url"], quote=True)
-        rows.append(
-            '<div class="poke-row">'
-            '<div class="poke-img-wrap">'
-            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
-            "</div>"
-            f'<span class="poke-name">{label}</span>'
-            "</div>"
-        )
-    inner = "".join(rows)
-    doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<style>
+def _pokemon_list_css_block(max_height_px: int, *, team_picker: bool) -> str:
+    """Shared iframe styles for browse list and team picker (hover zoom on rows)."""
+    team_extra = ""
+    if team_picker:
+        team_extra = """
+.poke-row.poke-pick { cursor: pointer; }
+.poke-row.poke-pick.selected {
+  outline: 2px solid rgba(100, 149, 237, 0.95);
+  background: rgba(100, 149, 237, 0.14);
+}
+"""
+    return f"""
 body {{
   margin: 0;
   padding: 0.35rem 0.5rem;
@@ -99,10 +94,96 @@ body {{
 .poke-row:hover .poke-name {{
   transform: scale(1.12);
 }}
-</style></head><body>
+{team_extra}"""
+
+
+def _render_pokemon_matches(matches: list[dict[str, str]], max_height_px: int) -> None:
+    """Scrollable list: hovering a row zooms artwork and name (CSS in iframe)."""
+    rows: list[str] = []
+    for r in matches:
+        label = html.escape(_display_name(r["name"]))
+        src = html.escape(r["sprite_url"], quote=True)
+        rows.append(
+            '<div class="poke-row">'
+            '<div class="poke-img-wrap">'
+            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
+            "</div>"
+            f'<span class="poke-name">{label}</span>'
+            "</div>"
+        )
+    inner = "".join(rows)
+    css = _pokemon_list_css_block(max_height_px, team_picker=False)
+    doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<style>{css}</style></head><body>
 <div class="poke-list-wrap">{inner}</div>
 </body></html>"""
     components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
+
+
+def _render_pokemon_team_picker(
+    matches: list[dict[str, str]],
+    max_height_px: int,
+    normalized: str,
+    slot_i: int,
+    selected_slug: str,
+) -> None:
+    """Clickable scrollable list with images, hover zoom, and selection highlight."""
+    rows: list[str] = []
+    for r in matches:
+        slug = r["name"]
+        label = html.escape(_display_name(slug))
+        src = html.escape(r["sprite_url"], quote=True)
+        sel = " selected" if slug == selected_slug else ""
+        slug_js = json.dumps(slug)
+        rows.append(
+            f'<div class="poke-row poke-pick{sel}" role="button" tabindex="0" '
+            f"onclick='teamPick({slug_js})'>"
+            '<div class="poke-img-wrap">'
+            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
+            "</div>"
+            f'<span class="poke-name">{label}</span>'
+            "</div>"
+        )
+    inner = "".join(rows)
+    css = _pokemon_list_css_block(max_height_px, team_picker=True)
+    doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<style>{css}</style></head><body>
+<script>
+function teamPick(slug) {{
+  try {{
+    var u = new URL(window.parent.location.href);
+    u.searchParams.set("pteam", {json.dumps(normalized)} + "|" + {json.dumps(str(int(slot_i)))} + "|" + slug);
+    window.parent.location.href = u.toString();
+  }} catch (e) {{}}
+}}
+</script>
+<div class="poke-list-wrap">{inner}</div>
+</body></html>"""
+    components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
+
+
+def _apply_team_pick_from_query() -> None:
+    """Apply ?pteam=norm|slot|slug from the team picker iframe (parent navigation)."""
+    qp = st.query_params
+    if "pteam" not in qp:
+        return
+    raw = qp["pteam"]
+    if isinstance(raw, list):
+        raw = raw[0] if raw else ""
+    try:
+        parts = str(raw).split("|", 2)
+        if len(parts) != 3:
+            return
+        norm, idx_s, slug = parts
+        st.session_state[f"team_pick_{norm}_{int(idx_s)}"] = slug
+    except (ValueError, TypeError):
+        pass
+    try:
+        del st.query_params["pteam"]
+    except KeyError:
+        pass
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading Pokédex from PokeAPI…")
@@ -140,7 +221,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
     st.header("Create a Pokémon team for your name")
     st.caption(
         "For each letter in your name (A–Z), choose one Pokémon whose English name "
-        "starts with that letter."
+        "starts with that letter. Scroll the gallery, hover to zoom, click a row to select."
     )
 
     raw_name = st.text_input(
@@ -164,6 +245,8 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
     slug_to_row = {r["name"]: r for r in rows}
     picks: list[tuple[str, dict[str, str]]] = []
 
+    _apply_team_pick_from_query()
+
     for i, letter in enumerate(letters):
         matches = _matches_for_letter(rows, letter)
         if not matches:
@@ -173,13 +256,20 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
         slugs = [r["name"] for r in matches]
         key = f"team_pick_{normalized}_{i}"
 
-        choice = st.selectbox(
-            f"Letter {letter} — pick {i + 1} of {len(letters)}",
-            options=slugs,
-            format_func=_display_name,
-            key=key,
-        )
+        if key not in st.session_state:
+            st.session_state[key] = slugs[0]
+        elif st.session_state[key] not in slugs:
+            st.session_state[key] = slugs[0]
+
+        choice = st.session_state[key]
         row = slug_to_row[choice]
+
+        st.markdown(
+            f"**Letter {letter}** — pick {i + 1} of {len(letters)} · "
+            f"selected: **{_display_name(choice)}**"
+        )
+        list_height = min(420, 48 + len(matches) * 72)
+        _render_pokemon_team_picker(matches, list_height, normalized, i, choice)
         picks.append((choice, row))
 
     if not picks:
