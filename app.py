@@ -7,6 +7,11 @@ import streamlit as st
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 
 
+def _display_name(slug: str) -> str:
+    """Format PokeAPI slug for display (hyphens as word breaks, title case)."""
+    return slug.replace("-", " ").title()
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading Pokédex from PokeAPI…")
 def all_pokemon_rows() -> list[dict[str, str]]:
     return sorted(iter_pokemon_list_entries(), key=lambda r: r["name"])
@@ -48,7 +53,7 @@ def main() -> None:
     st.dataframe(
         {
             "sprite_url": [r["sprite_url"] for r in matches],
-            "name": [r["name"] for r in matches],
+            "name": [_display_name(r["name"]) for r in matches],
         },
         column_config={
             "sprite_url": st.column_config.ImageColumn("", width="small"),
