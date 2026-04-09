@@ -8,8 +8,8 @@ from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading Pokédex from PokeAPI…")
-def all_pokemon_names() -> list[str]:
-    return sorted(row["name"] for row in iter_pokemon_list_entries())
+def all_pokemon_rows() -> list[dict[str, str]]:
+    return sorted(iter_pokemon_list_entries(), key=lambda r: r["name"])
 
 
 def main() -> None:
@@ -31,13 +31,13 @@ def main() -> None:
     )
 
     try:
-        names = all_pokemon_names()
+        rows = all_pokemon_rows()
     except OSError as e:
         st.error(f"Could not reach PokeAPI: {e}")
         return
 
     prefix = letter.lower()
-    matches = [n for n in names if n.startswith(prefix)]
+    matches = [r for r in rows if r["name"].startswith(prefix)]
 
     st.metric("Matching Pokémon", len(matches))
 
@@ -46,10 +46,17 @@ def main() -> None:
         return
 
     st.dataframe(
-        {"name": matches},
+        {
+            "sprite_url": [r["sprite_url"] for r in matches],
+            "name": [r["name"] for r in matches],
+        },
+        column_config={
+            "sprite_url": st.column_config.ImageColumn("", width="small"),
+            "name": st.column_config.TextColumn("Name"),
+        },
         use_container_width=True,
         hide_index=True,
-        height=min(520, 36 + len(matches) * 35),
+        height=min(600, 48 + len(matches) * 72),
     )
 
 
