@@ -19,7 +19,10 @@ def main() -> None:
         layout="centered",
     )
     st.title("Pokémon by first letter")
-    st.caption("Data from [PokeAPI](https://pokeapi.co/). Names include form variants (e.g. mega, regional).")
+    st.caption(
+        "Data from [PokeAPI](https://pokeapi.co/). "
+        "Mega and Gigantamax forms are excluded; other form variants may appear."
+    )
 
     letter = st.selectbox(
         "First letter",

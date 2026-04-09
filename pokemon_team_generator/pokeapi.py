@@ -9,6 +9,13 @@ USER_AGENT = "pokemon-team-generator/1.0"
 PAGE_SIZE = 1000
 TIMEOUT_S = 60
 
+
+def _is_mega_or_gmax_form(name: str) -> bool:
+    """True if the species slug is a Mega evolution or Gigantamax form."""
+    n = name.lower()
+    return "-mega" in n or "-gmax" in n
+
+
 def _fetch_json(url: str) -> dict:
     req = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(req, timeout=TIMEOUT_S) as resp:
@@ -28,6 +35,9 @@ def iter_pokemon_list_entries() -> Iterator[dict[str, str]]:
             raise TypeError("invalid results")
         for item in results:
             if isinstance(item, dict) and "name" in item and "url" in item:
-                yield {"name": str(item["name"]), "url": str(item["url"])}
+                name = str(item["name"])
+                if _is_mega_or_gmax_form(name):
+                    continue
+                yield {"name": name, "url": str(item["url"])}
         nxt = page.get("next")
         next_url = str(nxt) if nxt else None
