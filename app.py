@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
+import streamlit.components.v1 as components
 
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 
@@ -10,6 +13,87 @@ from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 def _display_name(slug: str) -> str:
     """Format PokeAPI slug for display (hyphens as word breaks, title case)."""
     return slug.replace("-", " ").title()
+
+
+def _render_pokemon_matches(matches: list[dict[str, str]], max_height_px: int) -> None:
+    """Scrollable list: hovering a row zooms artwork and name (CSS in iframe)."""
+    rows: list[str] = []
+    for r in matches:
+        label = html.escape(_display_name(r["name"]))
+        src = html.escape(r["sprite_url"], quote=True)
+        rows.append(
+            '<div class="poke-row">'
+            '<div class="poke-img-wrap">'
+            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
+            "</div>"
+            f'<span class="poke-name">{label}</span>'
+            "</div>"
+        )
+    inner = "".join(rows)
+    doc = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<style>
+body {{
+  margin: 0;
+  padding: 0.35rem 0.5rem;
+  font-family: system-ui, "Segoe UI", sans-serif;
+  color: CanvasText;
+  background: transparent;
+}}
+.poke-list-wrap {{
+  max-height: {max_height_px}px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.35rem 0.5rem;
+}}
+.poke-row {{
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.4rem 0.45rem;
+  border-radius: 0.35rem;
+  cursor: zoom-in;
+}}
+.poke-row:hover {{
+  background: rgba(128, 128, 128, 0.12);
+}}
+.poke-img-wrap {{
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+}}
+.poke-img {{
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  transition: transform 0.22s ease;
+  transform-origin: center center;
+  position: relative;
+  z-index: 0;
+}}
+.poke-row:hover .poke-img {{
+  transform: scale(1.65);
+  z-index: 2;
+}}
+.poke-name {{
+  font-size: 1rem;
+  line-height: 1.3;
+  transition: transform 0.22s ease;
+  transform-origin: left center;
+}}
+.poke-row:hover .poke-name {{
+  transform: scale(1.12);
+}}
+</style></head><body>
+<div class="poke-list-wrap">{inner}</div>
+</body></html>"""
+    components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading Pokédex from PokeAPI…")
@@ -50,19 +134,8 @@ def main() -> None:
         st.info("No Pokémon found for this letter.")
         return
 
-    st.dataframe(
-        {
-            "sprite_url": [r["sprite_url"] for r in matches],
-            "name": [_display_name(r["name"]) for r in matches],
-        },
-        column_config={
-            "sprite_url": st.column_config.ImageColumn("", width="small"),
-            "name": st.column_config.TextColumn("Name"),
-        },
-        use_container_width=True,
-        hide_index=True,
-        height=min(600, 48 + len(matches) * 72),
-    )
+    list_height = min(600, 48 + len(matches) * 72)
+    _render_pokemon_matches(matches, list_height)
 
 
 main()
