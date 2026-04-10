@@ -97,6 +97,8 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
         ]
 
         dd_key = _dropdown_key(normalized, i)
+        dd_reroll_key = f"{dd_key}_reroll"
+        dd_widget_key = f"{dd_key}__{st.session_state.get(dd_reroll_key, 0)}"
         dd_options = [_DROPDOWN_PLACEHOLDER] + slugs
 
         def _format_dd_option(x: str) -> str:
@@ -105,14 +107,15 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
             return _display_name(x)
 
         def _make_dropdown_sync(
-            dk: str,
+            wk: str,
+            reroll_k: str,
             slot: int,
             norm: str,
             slug_list: list[str],
             rv_key: str,
         ):
             def _sync() -> None:
-                picked = st.session_state.get(dk, _DROPDOWN_PLACEHOLDER)
+                picked = st.session_state.get(wk, _DROPDOWN_PLACEHOLDER)
                 if picked == _DROPDOWN_PLACEHOLDER or picked not in slug_list:
                     return
                 ck = _checkbox_key(norm, slot, picked)
@@ -125,7 +128,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
                     if picked not in revealed:
                         st.session_state[rv_key] = [*revealed, picked]
                     st.session_state[ck] = True
-                st.session_state[dk] = _DROPDOWN_PLACEHOLDER
+                st.session_state[reroll_k] = st.session_state.get(reroll_k, 0) + 1
 
             return _sync
 
@@ -133,8 +136,10 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
             f"All Pokémon for letter {letter}",
             options=dd_options,
             format_func=_format_dd_option,
-            key=dd_key,
-            on_change=_make_dropdown_sync(dd_key, i, normalized, slugs, revealed_key),
+            key=dd_widget_key,
+            on_change=_make_dropdown_sync(
+                dd_widget_key, dd_reroll_key, i, normalized, slugs, revealed_key
+            ),
         )
 
         st.caption("**Added here** (after you pick from the dropdown above)")
