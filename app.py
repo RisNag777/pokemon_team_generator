@@ -51,8 +51,8 @@ def _matches_for_letter(rows: list[dict[str, str]], letter: str) -> list[dict[st
 def page_team_for_name(rows: list[dict[str, str]]) -> None:
     st.header("Create a Pokémon team for your name")
     st.caption(
-        "For each letter, choose Pokémon from the **dropdown** first. "
-        "They then appear below where you can **check** them for your team."
+        "For each letter, pick from the **dropdown** to add Pokémon under **Added here**. "
+        "Pick the same Pokémon again to remove it, or **uncheck** a row."
     )
 
     raw_name = st.text_input(
@@ -90,6 +90,11 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
         if revealed_key not in st.session_state:
             st.session_state[revealed_key] = []
         st.session_state[revealed_key] = [s for s in st.session_state[revealed_key] if s in slugs]
+        st.session_state[revealed_key] = [
+            s
+            for s in st.session_state[revealed_key]
+            if st.session_state.get(_checkbox_key(normalized, i, s), False)
+        ]
 
         dd_key = _dropdown_key(normalized, i)
         dd_options = [_DROPDOWN_PLACEHOLDER] + slugs
@@ -110,10 +115,16 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
                 picked = st.session_state.get(dk, _DROPDOWN_PLACEHOLDER)
                 if picked == _DROPDOWN_PLACEHOLDER or picked not in slug_list:
                     return
-                revealed: list[str] = st.session_state.get(rv_key, [])
-                if picked not in revealed:
-                    st.session_state[rv_key] = [*revealed, picked]
-                st.session_state[_checkbox_key(norm, slot, picked)] = True
+                ck = _checkbox_key(norm, slot, picked)
+                revealed: list[str] = list(st.session_state.get(rv_key, []))
+                already_added = picked in revealed and st.session_state.get(ck, False)
+                if already_added:
+                    st.session_state[rv_key] = [s for s in revealed if s != picked]
+                    st.session_state[ck] = False
+                else:
+                    if picked not in revealed:
+                        st.session_state[rv_key] = [*revealed, picked]
+                    st.session_state[ck] = True
                 st.session_state[dk] = _DROPDOWN_PLACEHOLDER
 
             return _sync
@@ -144,8 +155,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
                     )
 
         for slug in revealed_slugs:
-            if st.session_state.get(_checkbox_key(normalized, i, slug), False):
-                all_picks.append((slug, slug_to_row[slug]))
+            all_picks.append((slug, slug_to_row[slug]))
 
     if not all_picks:
         st.info("Select at least one Pokémon above to see your team below.")
