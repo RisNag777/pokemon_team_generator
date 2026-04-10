@@ -14,9 +14,8 @@ TEAM_PICKER_EXTRA_CSS = """
 """
 
 
-def pokemon_list_css_block(max_height_px: int, *, team_picker: bool) -> str:
-    """Shared iframe styles for browse list and team picker (hover zoom on rows)."""
-    team_extra = TEAM_PICKER_EXTRA_CSS if team_picker else ""
+def pokemon_list_css_block(max_height_px: int) -> str:
+    """Iframe styles for the team picker list (hover zoom on rows)."""
     return f"""
 body {{
   margin: 0;
@@ -75,7 +74,7 @@ body {{
 .poke-row:hover .poke-name {{
   transform: scale(1.12);
 }}
-{team_extra}"""
+{TEAM_PICKER_EXTRA_CSS}"""
 
 
 def pokemon_row_body_html(label_escaped: str, src_escaped_attr: str) -> str:
@@ -109,11 +108,6 @@ function teamPick(slug) {{
 }}
 </script>
 """
-
-
-def pokemon_list_row_html(label_escaped: str, src_escaped_attr: str) -> str:
-    """One non-clickable row for the browse-by-letter iframe."""
-    return f'<div class="poke-row">{pokemon_row_body_html(label_escaped, src_escaped_attr)}</div>'
 
 
 def pokemon_team_picker_row_html(

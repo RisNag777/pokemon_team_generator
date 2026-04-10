@@ -1,4 +1,4 @@
-"""Streamlit UI: browse Pokémon by letter or build a name-based team (PokeAPI v2)."""
+"""Streamlit UI: build a Pokémon team from your name (PokeAPI v2)."""
 
 from __future__ import annotations
 
@@ -12,14 +12,10 @@ import streamlit.components.v1 as components
 from pokemon_team_generator.format import (
     pokemon_list_css_block,
     pokemon_list_iframe_document,
-    pokemon_list_row_html,
     pokemon_team_picker_row_html,
     team_picker_iframe_script,
 )
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
-
-MENU_BROWSE = "Browse by letter"
-MENU_TEAM = "Create a Pokémon team for your name"
 
 
 def _display_name(slug: str) -> str:
@@ -30,19 +26,6 @@ def _display_name(slug: str) -> str:
 def _letters_a_to_z(raw: str) -> list[str]:
     """Uppercase A–Z letters only (English Pokédex slugs)."""
     return [c.upper() for c in raw if c.upper() in string.ascii_uppercase]
-
-
-def _render_pokemon_matches(matches: list[dict[str, str]], max_height_px: int) -> None:
-    """Scrollable list: hovering a row zooms artwork and name (CSS in iframe)."""
-    rows: list[str] = []
-    for r in matches:
-        label = html.escape(_display_name(r["name"]))
-        src = html.escape(r["sprite_url"], quote=True)
-        rows.append(pokemon_list_row_html(label, src))
-    inner = "".join(rows)
-    css = pokemon_list_css_block(max_height_px, team_picker=False)
-    doc = pokemon_list_iframe_document(css, inner)
-    components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
 
 
 def _render_pokemon_team_picker(
@@ -68,7 +51,7 @@ def _render_pokemon_team_picker(
             )
         )
     inner = "".join(rows)
-    css = pokemon_list_css_block(max_height_px, team_picker=True)
+    css = pokemon_list_css_block(max_height_px)
     doc = pokemon_list_iframe_document(
         css,
         inner,
@@ -107,27 +90,6 @@ def all_pokemon_rows() -> list[dict[str, str]]:
 def _matches_for_letter(rows: list[dict[str, str]], letter: str) -> list[dict[str, str]]:
     prefix = letter.lower()
     return [r for r in rows if r["name"].startswith(prefix)]
-
-
-def page_browse_by_letter(rows: list[dict[str, str]]) -> None:
-    st.header("Pokémon by first letter")
-    letter = st.selectbox(
-        "First letter",
-        options=[chr(c) for c in range(ord("A"), ord("Z") + 1)],
-        index=0,
-    )
-
-    prefix = letter.lower()
-    matches = [r for r in rows if r["name"].startswith(prefix)]
-
-    st.metric("Matching Pokémon", len(matches))
-
-    if not matches:
-        st.info("No Pokémon found for this letter.")
-        return
-
-    list_height = min(600, 48 + len(matches) * 72)
-    _render_pokemon_matches(matches, list_height)
 
 
 def page_team_for_name(rows: list[dict[str, str]]) -> None:
@@ -213,21 +175,13 @@ def main() -> None:
         "Mega and Gigantamax forms are excluded; other form variants may appear."
     )
 
-    menu = st.sidebar.radio(
-        "Menu",
-        [MENU_BROWSE, MENU_TEAM],
-    )
-
     try:
         rows = all_pokemon_rows()
     except OSError as e:
         st.error(f"Could not reach PokeAPI: {e}")
         return
 
-    if menu == MENU_BROWSE:
-        page_browse_by_letter(rows)
-    else:
-        page_team_for_name(rows)
+    page_team_for_name(rows)
 
 
 main()
