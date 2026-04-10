@@ -9,6 +9,13 @@ import string
 import streamlit as st
 import streamlit.components.v1 as components
 
+from pokemon_team_generator.format import (
+    pokemon_list_css_block,
+    pokemon_list_iframe_document,
+    pokemon_list_row_html,
+    pokemon_team_picker_row_html,
+    team_picker_iframe_script,
+)
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 
 MENU_BROWSE = "Browse by letter"
@@ -25,99 +32,16 @@ def _letters_a_to_z(raw: str) -> list[str]:
     return [c.upper() for c in raw if c.upper() in string.ascii_uppercase]
 
 
-def _pokemon_list_css_block(max_height_px: int, *, team_picker: bool) -> str:
-    """Shared iframe styles for browse list and team picker (hover zoom on rows)."""
-    team_extra = ""
-    if team_picker:
-        team_extra = """
-.poke-row.poke-pick { cursor: pointer; }
-.poke-row.poke-pick.selected {
-  outline: 2px solid rgba(100, 149, 237, 0.95);
-  background: rgba(100, 149, 237, 0.14);
-}
-"""
-    return f"""
-body {{
-  margin: 0;
-  padding: 0.35rem 0.5rem;
-  font-family: system-ui, "Segoe UI", sans-serif;
-  color: CanvasText;
-  background: transparent;
-}}
-.poke-list-wrap {{
-  max-height: {max_height_px}px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 0.5rem;
-  padding: 0.35rem 0.5rem;
-}}
-.poke-row {{
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  padding: 0.4rem 0.45rem;
-  border-radius: 0.35rem;
-  cursor: zoom-in;
-}}
-.poke-row:hover {{
-  background: rgba(128, 128, 128, 0.12);
-}}
-.poke-img-wrap {{
-  width: 64px;
-  height: 64px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: visible;
-}}
-.poke-img {{
-  width: 56px;
-  height: 56px;
-  object-fit: contain;
-  transition: transform 0.22s ease;
-  transform-origin: center center;
-  position: relative;
-  z-index: 0;
-}}
-.poke-row:hover .poke-img {{
-  transform: scale(1.65);
-  z-index: 2;
-}}
-.poke-name {{
-  font-size: 1rem;
-  line-height: 1.3;
-  transition: transform 0.22s ease;
-  transform-origin: left center;
-}}
-.poke-row:hover .poke-name {{
-  transform: scale(1.12);
-}}
-{team_extra}"""
-
-
 def _render_pokemon_matches(matches: list[dict[str, str]], max_height_px: int) -> None:
     """Scrollable list: hovering a row zooms artwork and name (CSS in iframe)."""
     rows: list[str] = []
     for r in matches:
         label = html.escape(_display_name(r["name"]))
         src = html.escape(r["sprite_url"], quote=True)
-        rows.append(
-            '<div class="poke-row">'
-            '<div class="poke-img-wrap">'
-            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
-            "</div>"
-            f'<span class="poke-name">{label}</span>'
-            "</div>"
-        )
+        rows.append(pokemon_list_row_html(label, src))
     inner = "".join(rows)
-    css = _pokemon_list_css_block(max_height_px, team_picker=False)
-    doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<style>{css}</style></head><body>
-<div class="poke-list-wrap">{inner}</div>
-</body></html>"""
+    css = pokemon_list_css_block(max_height_px, team_picker=False)
+    doc = pokemon_list_iframe_document(css, inner)
     components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
 
 
@@ -134,33 +58,22 @@ def _render_pokemon_team_picker(
         slug = r["name"]
         label = html.escape(_display_name(slug))
         src = html.escape(r["sprite_url"], quote=True)
-        sel = " selected" if slug == selected_slug else ""
         slug_js = json.dumps(slug)
         rows.append(
-            f'<div class="poke-row poke-pick{sel}" role="button" tabindex="0" '
-            f"onclick='teamPick({slug_js})'>"
-            '<div class="poke-img-wrap">'
-            f'<img class="poke-img" src="{src}" alt="{label}" loading="lazy" />'
-            "</div>"
-            f'<span class="poke-name">{label}</span>'
-            "</div>"
+            pokemon_team_picker_row_html(
+                label,
+                src,
+                selected=slug == selected_slug,
+                slug_js=slug_js,
+            )
         )
     inner = "".join(rows)
-    css = _pokemon_list_css_block(max_height_px, team_picker=True)
-    doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<style>{css}</style></head><body>
-<script>
-function teamPick(slug) {{
-  try {{
-    var u = new URL(window.parent.location.href);
-    u.searchParams.set("pteam", {json.dumps(normalized)} + "|" + {json.dumps(str(int(slot_i)))} + "|" + slug);
-    window.parent.location.href = u.toString();
-  }} catch (e) {{}}
-}}
-</script>
-<div class="poke-list-wrap">{inner}</div>
-</body></html>"""
+    css = pokemon_list_css_block(max_height_px, team_picker=True)
+    doc = pokemon_list_iframe_document(
+        css,
+        inner,
+        body_prefix=team_picker_iframe_script(normalized, slot_i),
+    )
     components.html(doc, height=min(max_height_px + 32, 720), scrolling=False)
 
 
