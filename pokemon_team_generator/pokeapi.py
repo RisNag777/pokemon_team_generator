@@ -10,10 +10,10 @@ PAGE_SIZE = 1000
 TIMEOUT_S = 60
 
 
-def _is_mega_or_gmax_form(name: str) -> bool:
-    """True if the species slug is a Mega evolution or Gigantamax form."""
+def _is_excluded_form(name: str) -> bool:
+    """True if the slug is Mega, Gigantamax, or Totem (Alola boss) variant."""
     n = name.lower()
-    return "-mega" in n or "-gmax" in n
+    return "-mega" in n or "-gmax" in n or "-totem" in n
 
 
 def _official_artwork_url_from_list_url(list_url: str) -> str:
@@ -46,7 +46,7 @@ def iter_pokemon_list_entries() -> Iterator[dict[str, str]]:
         for item in results:
             if isinstance(item, dict) and "name" in item and "url" in item:
                 name = str(item["name"])
-                if _is_mega_or_gmax_form(name):
+                if _is_excluded_form(name):
                     continue
                 url = str(item["url"])
                 yield {

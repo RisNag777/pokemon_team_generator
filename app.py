@@ -239,7 +239,7 @@ def main() -> None:
     st.title("Pokémon team generator")
     st.caption(
         "Data from [PokeAPI](https://pokeapi.co/). "
-        "Mega and Gigantamax forms are excluded; other form variants may appear."
+        "Mega, Gigantamax, and Totem forms are excluded; other form variants may appear."
     )
 
     try:
