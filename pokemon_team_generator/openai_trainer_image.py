@@ -69,14 +69,17 @@ def generate_unified_group_scene_png(
         for i, raw in enumerate(sprite_bytes_list):
             streams.append(_bytesio_upload(raw, f"creature_{i + 1}.png"))
         try:
-            result = client.images.edit(
-                model=model,
-                image=streams,
-                prompt=prompt,
-                input_fidelity="high",
-                size=size,
-                quality="high",
-            )
+            # gpt-image-1-mini does not support input_fidelity high (API returns 400).
+            edit_kw: dict = {
+                "model": model,
+                "image": streams,
+                "prompt": prompt,
+                "size": size,
+                "quality": "high",
+            }
+            if model != "gpt-image-1-mini":
+                edit_kw["input_fidelity"] = "high"
+            result = client.images.edit(**edit_kw)
             b64 = result.data[0].b64_json if result.data else None
             if not b64:
                 raise RuntimeError("GPT Image returned no image data")

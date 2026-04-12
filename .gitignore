@@ -1,4 +1,6 @@
 .env
+trainer_teams.sqlite
+trainer_teams.sqlite-*
 pokemon_env/
 __pycache__/
 *.py[cod]

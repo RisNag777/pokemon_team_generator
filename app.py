@@ -11,6 +11,13 @@ from dotenv import load_dotenv
 
 from pokemon_team_generator.openai_trainer_image import generate_unified_group_scene_png
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
+from pokemon_team_generator.trainer_db import (
+    get_trainer,
+    insert_draft_trainer,
+    list_saved_teams,
+    save_trainer_team,
+    update_trainer_fields,
+)
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -99,19 +106,26 @@ def _letters_a_to_z(raw: str) -> list[str]:
     return [c.upper() for c in raw if c.upper() in string.ascii_uppercase]
 
 
-def _checkbox_key(normalized: str, slot_i: int, slug: str) -> str:
+def _team_state_prefix(editing_id: int | None, normalized: str) -> str:
+    """Session prefix: stable while editing a saved row; otherwise tied to the current name letters."""
+    if editing_id is not None:
+        return f"edit_{editing_id}"
+    return normalized
+
+
+def _checkbox_key(prefix: str, slot_i: int, slug: str) -> str:
     """Session-state key for one Pokémon checkbox (slot = letter index in name)."""
-    return f"team_cb_{normalized}_{slot_i}_{slug}"
+    return f"team_cb_{prefix}_{slot_i}_{slug}"
 
 
-def _dropdown_key(normalized: str, slot_i: int) -> str:
+def _dropdown_key(prefix: str, slot_i: int) -> str:
     """Session-state key for the per-letter selectbox."""
-    return f"team_dd_{normalized}_{slot_i}"
+    return f"team_dd_{prefix}_{slot_i}"
 
 
-def _revealed_key(normalized: str, slot_i: int) -> str:
+def _revealed_key(prefix: str, slot_i: int) -> str:
     """Session-state key for slugs added via dropdown (shown in checkbox section)."""
-    return f"team_revealed_{normalized}_{slot_i}"
+    return f"team_revealed_{prefix}_{slot_i}"
 
 
 # Not a valid Pokédex slug — used as the selectbox default / reset value.
@@ -128,20 +142,136 @@ def _matches_for_letter(rows: list[dict[str, str]], letter: str) -> list[dict[st
     return [r for r in rows if r["name"].startswith(prefix)]
 
 
-def page_team_for_name(rows: list[dict[str, str]]) -> None:
-    st.header("Create a Pokémon team for your name")
-    st.caption(
-        "For each letter, pick from the **dropdown** to add Pokémon under **Added here**. "
-        "Pick the same Pokémon again to remove it, or **uncheck** a row."
-    )
+def _collect_team_slots(prefix: str, n_letters: int) -> list[list[str]]:
+    return [list(st.session_state.get(_revealed_key(prefix, i), [])) for i in range(n_letters)]
+
+
+def _persist_team_confirm_to_db(
+    editing_id: int | None,
+    trainer_name: str,
+    team_slots: list[list[str]],
+) -> None:
+    """Insert or update DB row when the user confirms their team."""
+    if editing_id is not None:
+        update_trainer_fields(editing_id, trainer_name=trainer_name, team_slots=team_slots)
+        return
+    draft = st.session_state.get("draft_row_id")
+    if draft is not None:
+        update_trainer_fields(int(draft), trainer_name=trainer_name, team_slots=team_slots)
+        return
+    rid = insert_draft_trainer(trainer_name, team_slots)
+    st.session_state["draft_row_id"] = int(rid)
+
+
+def _persist_photo_to_db(
+    row_id: int,
+    prefix: str,
+    editing_id: int | None,
+    photo_bytes: bytes,
+) -> None:
+    if not photo_bytes:
+        return
+    sig = hash(photo_bytes)
+    sig_key = f"_db_photo_sig_{prefix}"
+    if st.session_state.get(sig_key) == sig:
+        return
+    update_trainer_fields(row_id, photo_bytes=photo_bytes)
+    st.session_state[sig_key] = sig
+    if editing_id is not None:
+        st.session_state[f"_edit_photo_bytes_{editing_id}"] = photo_bytes
+
+
+def _persist_generated_image_to_db(
+    editing_id: int | None,
+    trainer_name: str,
+    team_slots: list[list[str]],
+    photo_to_store: bytes,
+    png: bytes,
+) -> int:
+    """
+    Always write the generated PNG to team_image_blob (and related fields).
+    Creates a full row if none exists yet for this session.
+    """
+    if editing_id is not None:
+        update_trainer_fields(
+            editing_id,
+            trainer_name=trainer_name,
+            team_slots=team_slots,
+            photo_bytes=photo_to_store,
+            team_image_png=png,
+        )
+        return int(editing_id)
+    draft = st.session_state.get("draft_row_id")
+    if draft is not None:
+        rid = int(draft)
+        update_trainer_fields(
+            rid,
+            trainer_name=trainer_name,
+            team_slots=team_slots,
+            photo_bytes=photo_to_store,
+            team_image_png=png,
+        )
+        return rid
+    rid = save_trainer_team(trainer_name, photo_to_store, team_slots, png)
+    st.session_state["draft_row_id"] = int(rid)
+    return int(rid)
+
+
+def render_team_page(rows: list[dict[str, str]]) -> None:
+    editing_id: int | None = st.session_state.get("editing_id")
+
+    if editing_id is not None:
+        load_flag = f"_loaded_edit_{editing_id}"
+        if load_flag not in st.session_state:
+            try:
+                rec = get_trainer(editing_id)
+            except KeyError:
+                st.error("That saved team no longer exists.")
+                st.session_state["editing_id"] = None
+                return
+            pfx = f"edit_{editing_id}"
+            name = str(rec["trainer_name"])
+            letters_load = _letters_a_to_z(name)
+            slots: list[list[str]] = [list(s) for s in (rec["team_slots"] or [])]
+            while len(slots) < len(letters_load):
+                slots.append([])
+            for i in range(len(letters_load)):
+                rv = _revealed_key(pfx, i)
+                sl = slots[i] if i < len(slots) else []
+                st.session_state[rv] = list(sl)
+                for slug in sl:
+                    st.session_state[_checkbox_key(pfx, i, slug)] = True
+                dd_reroll = f"{_dropdown_key(pfx, i)}_reroll"
+                st.session_state[dd_reroll] = st.session_state.get(dd_reroll, 0) + 1
+            st.session_state["trainer_name_input"] = name
+            pb = rec["photo_bytes"]
+            if pb:
+                st.session_state[f"_edit_photo_bytes_{editing_id}"] = pb
+            else:
+                st.session_state.pop(f"_edit_photo_bytes_{editing_id}", None)
+            st.session_state[load_flag] = True
+
+    if editing_id is not None:
+        st.header("Edit saved team")
+        st.caption(
+            "Change your name, Pokémon, or photo, then generate again to **overwrite** this row in the database."
+        )
+    else:
+        st.header("Create a Pokémon team for your name")
+        st.caption(
+            "For each letter, pick from the **dropdown** to add Pokémon under **Added here**. "
+            "Pick the same Pokémon again to remove it, or **uncheck** a row."
+        )
 
     raw_name = st.text_input(
         "Your name",
         placeholder="e.g. Ash",
         max_chars=64,
+        key="trainer_name_input",
     )
     letters = _letters_a_to_z(raw_name)
     normalized = "".join(c.lower() for c in letters)
+    prefix = _team_state_prefix(editing_id, normalized)
 
     if not raw_name.strip():
         st.info("Enter a name to build your team.")
@@ -166,17 +296,17 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
 
         st.markdown(f"**Letter {letter}** — pick {i + 1} of {len(letters)}")
 
-        revealed_key = _revealed_key(normalized, i)
+        revealed_key = _revealed_key(prefix, i)
         if revealed_key not in st.session_state:
             st.session_state[revealed_key] = []
         st.session_state[revealed_key] = [s for s in st.session_state[revealed_key] if s in slugs]
         st.session_state[revealed_key] = [
             s
             for s in st.session_state[revealed_key]
-            if st.session_state.get(_checkbox_key(normalized, i, s), False)
+            if st.session_state.get(_checkbox_key(prefix, i, s), False)
         ]
 
-        dd_key = _dropdown_key(normalized, i)
+        dd_key = _dropdown_key(prefix, i)
         dd_reroll_key = f"{dd_key}_reroll"
         dd_widget_key = f"{dd_key}__{st.session_state.get(dd_reroll_key, 0)}"
         dd_options = [_DROPDOWN_PLACEHOLDER] + slugs
@@ -190,7 +320,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
             wk: str,
             reroll_k: str,
             slot: int,
-            norm: str,
+            pfx: str,
             slug_list: list[str],
             rv_key: str,
         ):
@@ -198,7 +328,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
                 picked = st.session_state.get(wk, _DROPDOWN_PLACEHOLDER)
                 if picked == _DROPDOWN_PLACEHOLDER or picked not in slug_list:
                     return
-                ck = _checkbox_key(norm, slot, picked)
+                ck = _checkbox_key(pfx, slot, picked)
                 revealed: list[str] = list(st.session_state.get(rv_key, []))
                 already_added = picked in revealed and st.session_state.get(ck, False)
                 if already_added:
@@ -218,7 +348,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
             format_func=_format_dd_option,
             key=dd_widget_key,
             on_change=_make_dropdown_sync(
-                dd_widget_key, dd_reroll_key, i, normalized, slugs, revealed_key
+                dd_widget_key, dd_reroll_key, i, prefix, slugs, revealed_key
             ),
         )
 
@@ -229,7 +359,7 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
         else:
             for slug in revealed_slugs:
                 r = slug_to_row[slug]
-                ck = _checkbox_key(normalized, i, slug)
+                ck = _checkbox_key(prefix, i, slug)
                 img_col, box_col = st.columns([0.11, 0.89])
                 with img_col:
                     st.image(r["sprite_url"], width=48)
@@ -267,30 +397,73 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
     if not openai_key:
         st.info("Set **OPENAI_API_KEY** in `.env` or Streamlit secrets to generate a team image.")
 
-    poster_ok = st.checkbox("I confirm this team.", key=f"poster_confirm_{normalized}")
+    if editing_id is not None:
+        pb = st.session_state.get(f"_edit_photo_bytes_{editing_id}")
+        if pb:
+            st.image(pb, caption="Saved photo — use the camera below to replace it for the next generation.")
+
+    poster_ok = st.checkbox("I confirm this team.", key=f"poster_confirm_{prefix}")
+
+    team_slots_live = _collect_team_slots(prefix, len(letters))
+    if poster_ok:
+        try:
+            _persist_team_confirm_to_db(editing_id, raw_name.strip(), team_slots_live)
+        except Exception as save_err:
+            st.warning(f"Could not save team to database: {save_err}")
 
     if poster_ok:
         cam = st.camera_input(
             "Your photo",
-            key=f"poster_cam_{normalized}",
+            key=f"poster_cam_{prefix}",
             help="Sent to OpenAI with your team’s official artwork for image generation.",
         )
-        if cam is not None and openai_key:
-            if st.button("Generate team image", key=f"unified_{normalized}"):
+        saved_photo = (
+            st.session_state.get(f"_edit_photo_bytes_{editing_id}") if editing_id is not None else None
+        )
+        photo_for_api = cam.getvalue() if cam is not None else (saved_photo or b"")
+        row_id = editing_id if editing_id is not None else st.session_state.get("draft_row_id")
+        if cam is not None and row_id is not None:
+            pb = cam.getvalue()
+            if pb:
+                try:
+                    _persist_photo_to_db(int(row_id), prefix, editing_id, pb)
+                except Exception as save_err:
+                    st.warning(f"Could not save photo to database: {save_err}")
+        can_generate = openai_key and photo_for_api and len(photo_for_api) > 0
+
+        if can_generate:
+            if st.button("Generate team image", key=f"unified_{prefix}"):
                 with st.spinner("Sending photo + sprites to GPT Image for one scene…"):
                     try:
-                        png = generate_unified_group_scene_png(openai_key, cam.getvalue(), all_picks)
+                        png = generate_unified_group_scene_png(openai_key, photo_for_api, all_picks)
                     except Exception as e:
                         st.error(f"Image generation failed: {e}")
                     else:
+                        team_slots = _collect_team_slots(prefix, len(letters))
+                        photo_to_store = cam.getvalue() if cam is not None else (saved_photo or photo_for_api)
+                        try:
+                            row_id = _persist_generated_image_to_db(
+                                editing_id,
+                                raw_name.strip(),
+                                team_slots,
+                                photo_to_store,
+                                png,
+                            )
+                            if editing_id is not None:
+                                st.session_state[f"_edit_photo_bytes_{editing_id}"] = photo_to_store
+                            st.success(f"Generated image saved to database (row **{row_id}**).")
+                        except Exception as save_err:
+                            st.warning(f"Image was generated but could not be saved to the database: {save_err}")
                         st.image(png, caption="Generated scene (references: you + official artwork)")
                         st.download_button(
                             "Download PNG",
                             data=png,
                             file_name="team_unified_scene.png",
                             mime="image/png",
-                            key=f"unified_dl_{normalized}",
+                            key=f"unified_dl_{prefix}",
                         )
+        elif openai_key and not photo_for_api:
+            st.warning("Add a camera photo (or open a saved team that includes one).")
 
 
 def main() -> None:
@@ -299,6 +472,33 @@ def main() -> None:
         page_icon="⚡",
         layout="wide",
     )
+
+    if "editing_id" not in st.session_state:
+        st.session_state["editing_id"] = None
+
+    with st.sidebar:
+        st.subheader("Navigation")
+        if st.button("Home", use_container_width=True):
+            st.session_state["editing_id"] = None
+            st.session_state.pop("draft_row_id", None)
+            st.session_state.pop("trainer_name_input", None)
+            st.rerun()
+
+        st.divider()
+        st.subheader("Generated teams")
+        teams = list_saved_teams()
+        if not teams:
+            st.caption("No saved teams yet.")
+        else:
+            with st.expander("Open a team", expanded=True):
+                for t in teams:
+                    tid = int(t["id"])
+                    label = f"{t['trainer_name']} (#{tid})"
+                    if st.button(label, key=f"sb_open_team_{tid}", use_container_width=True):
+                        st.session_state.pop(f"_loaded_edit_{tid}", None)
+                        st.session_state.pop("draft_row_id", None)
+                        st.session_state["editing_id"] = tid
+                        st.rerun()
 
     st.title("Pokémon team generator")
     st.caption(
@@ -312,7 +512,7 @@ def main() -> None:
         st.error(f"Could not reach PokeAPI: {e}")
         return
 
-    page_team_for_name(rows)
+    render_team_page(rows)
 
 
 main()
