@@ -11,15 +11,20 @@ BATTLE_TEMPERATURE = 0.5
 _DEFAULT_MODEL = "gpt-4o-mini"
 
 
-def ordered_team_slugs(team_slots: list[list[str]], *, max_size: int = 6) -> list[str]:
-    """Flatten per-letter slots in order; cap at six Pokémon like a standard battle team."""
+def all_team_slugs_in_order(team_slots: list[list[str]]) -> list[str]:
+    """Flatten per-letter slots in order (no cap)."""
     out: list[str] = []
     for slot in team_slots:
         for raw in slot:
             s = (raw or "").strip()
             if s:
                 out.append(s)
-    return out[:max_size]
+    return out
+
+
+def ordered_team_slugs(team_slots: list[list[str]], *, max_size: int = 6) -> list[str]:
+    """Flatten per-letter slots in order; cap at six Pokémon like a standard battle team."""
+    return all_team_slugs_in_order(team_slots)[:max_size]
 
 
 def _pretty_move(name: str) -> str:
