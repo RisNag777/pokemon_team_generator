@@ -124,6 +124,16 @@ def list_saved_teams() -> list[dict[str, int | str]]:
     return [{"id": r[0], "trainer_name": r[1], "created_at": r[2]} for r in rows]
 
 
+def delete_trainer(row_id: int) -> None:
+    """Remove a row by primary key. Raises ``KeyError`` if no such row."""
+    init_db()
+    with sqlite3.connect(db_path()) as conn:
+        cur = conn.execute("DELETE FROM trainer_teams WHERE id = ?", (row_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise KeyError(f"No trainer row {row_id}")
+
+
 def get_trainer(row_id: int) -> dict[str, object]:
     init_db()
     with sqlite3.connect(db_path()) as conn:

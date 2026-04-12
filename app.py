@@ -15,6 +15,7 @@ import sqlite3
 
 from pokemon_team_generator.trainer_db import (
     db_path,
+    delete_trainer,
     get_trainer,
     init_db,
     insert_draft_trainer,
@@ -487,7 +488,7 @@ def _trainer_summaries_for_view() -> list[dict[str, int | str]]:
 
 
 def render_database_page() -> None:
-    """Read-only view of trainer_teams rows and stored blobs."""
+    """View trainer_teams rows, images, and optional delete."""
     st.header("Trainer database")
     st.caption(f"SQLite file: `{db_path()}`")
 
@@ -540,6 +541,35 @@ def render_database_page() -> None:
                 st.image(img, width=480)
             else:
                 st.caption("No generated image stored.")
+
+            st.divider()
+            del_confirm_key = f"db_delete_confirm_{tid}"
+            if st.button("Delete this trainer", type="secondary", key=f"db_delete_{tid}"):
+                st.session_state[del_confirm_key] = True
+            if st.session_state.get(del_confirm_key):
+                st.warning(
+                    f"Permanently delete **#{tid}** — **{rec['trainer_name']}**? This cannot be undone."
+                )
+                c_yes, c_no = st.columns(2)
+                with c_yes:
+                    if st.button("Yes, delete", type="primary", key=f"db_delete_yes_{tid}"):
+                        try:
+                            delete_trainer(tid)
+                        except KeyError:
+                            st.error("That row no longer exists.")
+                        else:
+                            st.session_state.pop(del_confirm_key, None)
+                            st.session_state.pop(f"_loaded_edit_{tid}", None)
+                            st.session_state.pop(f"_edit_photo_bytes_{tid}", None)
+                            if st.session_state.get("editing_id") == tid:
+                                st.session_state["editing_id"] = None
+                            if st.session_state.get("draft_row_id") == tid:
+                                st.session_state.pop("draft_row_id", None)
+                            st.rerun()
+                with c_no:
+                    if st.button("Cancel", key=f"db_delete_no_{tid}"):
+                        st.session_state.pop(del_confirm_key, None)
+                        st.rerun()
 
 
 def main() -> None:
