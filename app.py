@@ -11,8 +11,12 @@ from dotenv import load_dotenv
 
 from pokemon_team_generator.openai_trainer_image import generate_unified_group_scene_png
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
+import sqlite3
+
 from pokemon_team_generator.trainer_db import (
+    db_path,
     get_trainer,
+    init_db,
     insert_draft_trainer,
     list_saved_teams,
     save_trainer_team,
@@ -163,33 +167,14 @@ def _persist_team_confirm_to_db(
     st.session_state["draft_row_id"] = int(rid)
 
 
-def _persist_photo_to_db(
-    row_id: int,
-    prefix: str,
-    editing_id: int | None,
-    photo_bytes: bytes,
-) -> None:
-    if not photo_bytes:
-        return
-    sig = hash(photo_bytes)
-    sig_key = f"_db_photo_sig_{prefix}"
-    if st.session_state.get(sig_key) == sig:
-        return
-    update_trainer_fields(row_id, photo_bytes=photo_bytes)
-    st.session_state[sig_key] = sig
-    if editing_id is not None:
-        st.session_state[f"_edit_photo_bytes_{editing_id}"] = photo_bytes
-
-
 def _persist_generated_image_to_db(
     editing_id: int | None,
     trainer_name: str,
     team_slots: list[list[str]],
-    photo_to_store: bytes,
     png: bytes,
 ) -> int:
     """
-    Always write the generated PNG to team_image_blob (and related fields).
+    Write the generated PNG to team_image_blob (user camera image is not stored).
     Creates a full row if none exists yet for this session.
     """
     if editing_id is not None:
@@ -197,7 +182,6 @@ def _persist_generated_image_to_db(
             editing_id,
             trainer_name=trainer_name,
             team_slots=team_slots,
-            photo_bytes=photo_to_store,
             team_image_png=png,
         )
         return int(editing_id)
@@ -208,11 +192,10 @@ def _persist_generated_image_to_db(
             rid,
             trainer_name=trainer_name,
             team_slots=team_slots,
-            photo_bytes=photo_to_store,
             team_image_png=png,
         )
         return rid
-    rid = save_trainer_team(trainer_name, photo_to_store, team_slots, png)
+    rid = save_trainer_team(trainer_name, team_slots, png)
     st.session_state["draft_row_id"] = int(rid)
     return int(rid)
 
@@ -244,11 +227,7 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                 dd_reroll = f"{_dropdown_key(pfx, i)}_reroll"
                 st.session_state[dd_reroll] = st.session_state.get(dd_reroll, 0) + 1
             st.session_state["trainer_name_input"] = name
-            pb = rec["photo_bytes"]
-            if pb:
-                st.session_state[f"_edit_photo_bytes_{editing_id}"] = pb
-            else:
-                st.session_state.pop(f"_edit_photo_bytes_{editing_id}", None)
+            st.session_state.pop(f"_edit_photo_bytes_{editing_id}", None)
             st.session_state[load_flag] = True
 
     if editing_id is not None:
@@ -397,11 +376,6 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
     if not openai_key:
         st.info("Set **OPENAI_API_KEY** in `.env` or Streamlit secrets to generate a team image.")
 
-    if editing_id is not None:
-        pb = st.session_state.get(f"_edit_photo_bytes_{editing_id}")
-        if pb:
-            st.image(pb, caption="Saved photo — use the camera below to replace it for the next generation.")
-
     poster_ok = st.checkbox("I confirm this team.", key=f"poster_confirm_{prefix}")
 
     team_slots_live = _collect_team_slots(prefix, len(letters))
@@ -415,20 +389,14 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
         cam = st.camera_input(
             "Your photo",
             key=f"poster_cam_{prefix}",
-            help="Sent to OpenAI with your team’s official artwork for image generation.",
+            help="Sent to OpenAI for image generation only — not saved to the database.",
         )
         saved_photo = (
             st.session_state.get(f"_edit_photo_bytes_{editing_id}") if editing_id is not None else None
         )
+        if cam is not None and editing_id is not None:
+            st.session_state[f"_edit_photo_bytes_{editing_id}"] = cam.getvalue()
         photo_for_api = cam.getvalue() if cam is not None else (saved_photo or b"")
-        row_id = editing_id if editing_id is not None else st.session_state.get("draft_row_id")
-        if cam is not None and row_id is not None:
-            pb = cam.getvalue()
-            if pb:
-                try:
-                    _persist_photo_to_db(int(row_id), prefix, editing_id, pb)
-                except Exception as save_err:
-                    st.warning(f"Could not save photo to database: {save_err}")
         can_generate = openai_key and photo_for_api and len(photo_for_api) > 0
 
         if can_generate:
@@ -440,17 +408,13 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                         st.error(f"Image generation failed: {e}")
                     else:
                         team_slots = _collect_team_slots(prefix, len(letters))
-                        photo_to_store = cam.getvalue() if cam is not None else (saved_photo or photo_for_api)
                         try:
                             row_id = _persist_generated_image_to_db(
                                 editing_id,
                                 raw_name.strip(),
                                 team_slots,
-                                photo_to_store,
                                 png,
                             )
-                            if editing_id is not None:
-                                st.session_state[f"_edit_photo_bytes_{editing_id}"] = photo_to_store
                             st.success(f"Generated image saved to database (row **{row_id}**).")
                         except Exception as save_err:
                             st.warning(f"Image was generated but could not be saved to the database: {save_err}")
@@ -466,6 +430,84 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
             st.warning("Add a camera photo (or open a saved team that includes one).")
 
 
+def _trainer_summaries_for_view() -> list[dict[str, int | str]]:
+    """Lightweight rows for the database page (same table as trainer_db, avoids import mismatch)."""
+    init_db()
+    with sqlite3.connect(db_path()) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, trainer_name, created_at,
+                   COALESCE(LENGTH(team_image_blob), 0)
+            FROM trainer_teams ORDER BY id DESC
+            """
+        ).fetchall()
+    return [
+        {
+            "id": int(r[0]),
+            "trainer_name": str(r[1]),
+            "created_at": str(r[2]),
+            "image_bytes": int(r[3]),
+        }
+        for r in rows
+    ]
+
+
+def render_database_page() -> None:
+    """Read-only view of trainer_teams rows and stored blobs."""
+    st.header("Trainer database")
+    st.caption(f"SQLite file: `{db_path()}`")
+
+    try:
+        summaries = _trainer_summaries_for_view()
+    except OSError as e:
+        st.error(f"Could not read database: {e}")
+        return
+
+    if not summaries:
+        st.info("No rows in **trainer_teams** yet.")
+        return
+
+    try:
+        import pandas as pd
+
+        df = pd.DataFrame(summaries)
+        df = df.rename(
+            columns={
+                "trainer_name": "Trainer",
+                "created_at": "Created (UTC)",
+                "image_bytes": "Generated image size (B)",
+            }
+        )
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    except Exception:
+        st.table(summaries)
+
+    st.subheader("Row details")
+    for s in summaries:
+        tid = int(s["id"])
+        with st.expander(f"#{tid} — {s['trainer_name']}", expanded=False):
+            try:
+                rec = get_trainer(tid)
+            except KeyError:
+                st.warning("Row was deleted.")
+                continue
+            st.json(
+                {
+                    "id": rec["id"],
+                    "trainer_name": rec["trainer_name"],
+                    "created_at": rec["created_at"],
+                    "team_slots": rec["team_slots"],
+                }
+            )
+            st.caption("User photos are not stored in the database.")
+            img = rec["team_image_png"]
+            if img:
+                st.caption("Generated team image")
+                st.image(img, width=480)
+            else:
+                st.caption("No generated image stored.")
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Pokémon team generator",
@@ -475,13 +517,22 @@ def main() -> None:
 
     if "editing_id" not in st.session_state:
         st.session_state["editing_id"] = None
+    if "nav_page" not in st.session_state:
+        st.session_state["nav_page"] = "team"
 
     with st.sidebar:
         st.subheader("Navigation")
         if st.button("Home", use_container_width=True):
+            st.session_state["nav_page"] = "team"
             st.session_state["editing_id"] = None
             st.session_state.pop("draft_row_id", None)
             st.session_state.pop("trainer_name_input", None)
+            st.rerun()
+
+        if st.button("View database", use_container_width=True):
+            st.session_state["nav_page"] = "database"
+            st.session_state["editing_id"] = None
+            st.session_state.pop("draft_row_id", None)
             st.rerun()
 
         st.divider()
@@ -495,10 +546,16 @@ def main() -> None:
                     tid = int(t["id"])
                     label = f"{t['trainer_name']} (#{tid})"
                     if st.button(label, key=f"sb_open_team_{tid}", use_container_width=True):
+                        st.session_state["nav_page"] = "team"
                         st.session_state.pop(f"_loaded_edit_{tid}", None)
                         st.session_state.pop("draft_row_id", None)
                         st.session_state["editing_id"] = tid
                         st.rerun()
+
+    if st.session_state.get("nav_page") == "database":
+        st.title("Pokémon team generator")
+        render_database_page()
+        return
 
     st.title("Pokémon team generator")
     st.caption(

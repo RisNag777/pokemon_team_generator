@@ -1,4 +1,4 @@
-"""SQLite persistence: trainer name, camera photo, team (per-letter slots), generated image."""
+"""SQLite persistence: trainer name, team (per-letter slots), generated image. User photos are not stored."""
 
 from __future__ import annotations
 
@@ -76,6 +76,12 @@ def init_db() -> None:
             """
         )
         _migrate_nullable_blobs(conn)
+        _clear_stored_photos(conn)
+
+
+def _clear_stored_photos(conn: sqlite3.Connection) -> None:
+    """Remove user photos from DB (column kept for schema compat; we no longer persist camera images)."""
+    conn.execute("UPDATE trainer_teams SET photo_blob = NULL WHERE photo_blob IS NOT NULL")
 
 
 def _parse_team_json(raw: str, *, trainer_name: str) -> list[list[str]]:
@@ -123,21 +129,20 @@ def get_trainer(row_id: int) -> dict[str, object]:
     with sqlite3.connect(db_path()) as conn:
         row = conn.execute(
             """
-            SELECT id, trainer_name, photo_blob, team_slugs_json, team_image_blob, created_at
+            SELECT id, trainer_name, team_slugs_json, team_image_blob, created_at
             FROM trainer_teams WHERE id = ?
             """,
             (row_id,),
         ).fetchone()
     if not row:
         raise KeyError(f"No trainer row {row_id}")
-    team_slots = _parse_team_json(str(row[3]), trainer_name=str(row[1]))
+    team_slots = _parse_team_json(str(row[2]), trainer_name=str(row[1]))
     return {
         "id": int(row[0]),
         "trainer_name": str(row[1]),
-        "photo_bytes": row[2],
         "team_slots": team_slots,
-        "team_image_png": row[4],
-        "created_at": str(row[5]),
+        "team_image_png": row[3],
+        "created_at": str(row[4]),
     }
 
 
@@ -169,10 +174,9 @@ def update_trainer_fields(
     *,
     trainer_name: str | None = None,
     team_slots: list[list[str]] | None = None,
-    photo_bytes: Any = _UNSET,
     team_image_png: Any = _UNSET,
 ) -> None:
-    """Update only columns that are passed (besides trainer_name/team_slots which use None to skip)."""
+    """Update only columns that are passed (user photo is never stored)."""
     init_db()
     parts: list[str] = []
     vals: list[object] = []
@@ -182,9 +186,6 @@ def update_trainer_fields(
     if team_slots is not None:
         parts.append("team_slugs_json = ?")
         vals.append(_team_payload(team_slots))
-    if photo_bytes is not _UNSET:
-        parts.append("photo_blob = ?")
-        vals.append(photo_bytes)
     if team_image_png is not _UNSET:
         parts.append("team_image_blob = ?")
         vals.append(team_image_png)
@@ -199,11 +200,10 @@ def update_trainer_fields(
 
 def save_trainer_team(
     trainer_name: str,
-    photo_bytes: bytes,
     team_slots: list[list[str]],
     team_image_png: bytes,
 ) -> int:
-    """Insert a fully populated row; returns new primary key."""
+    """Insert a fully populated row (no user photo); returns new primary key."""
     init_db()
     created_at = datetime.now(timezone.utc).isoformat()
     payload = _team_payload(team_slots)
@@ -211,11 +211,10 @@ def save_trainer_team(
         cur = conn.execute(
             """
             INSERT INTO trainer_teams (trainer_name, photo_blob, team_slugs_json, team_image_blob, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, NULL, ?, ?, ?)
             """,
             (
                 trainer_name.strip(),
-                photo_bytes,
                 payload,
                 team_image_png,
                 created_at,
@@ -230,15 +229,13 @@ def save_trainer_team(
 def update_trainer_team(
     row_id: int,
     trainer_name: str,
-    photo_bytes: bytes,
     team_slots: list[list[str]],
     team_image_png: bytes,
 ) -> None:
-    """Overwrite all content columns (keeps id and original created_at)."""
+    """Overwrite content columns (keeps id and original created_at)."""
     update_trainer_fields(
         row_id,
         trainer_name=trainer_name,
         team_slots=team_slots,
-        photo_bytes=photo_bytes,
         team_image_png=team_image_png,
     )
