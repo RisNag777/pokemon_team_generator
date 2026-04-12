@@ -10,9 +10,19 @@ PAGE_SIZE = 1000
 TIMEOUT_S = 60
 
 
+_EXCLUDED_POKEMON_SLUGS: frozenset[str] = frozenset(
+    {
+        # Event variant; list UI would show "Rockruff (Own Tempo)".
+        "rockruff-own-tempo",
+    }
+)
+
+
 def _is_excluded_form(name: str) -> bool:
-    """True if the slug is Mega, Gigantamax, Totem, or Starter (e.g. Let's Go partner) variant."""
+    """True if the slug is Mega, Gigantamax, Totem, Starter, or another excluded variant."""
     n = name.lower()
+    if n in _EXCLUDED_POKEMON_SLUGS:
+        return True
     if "-mega" in n or "-gmax" in n or "-totem" in n:
         return True
     # e.g. pikachu-starter, eevee-starter — list UI would show "Pikachu (Starter)".
