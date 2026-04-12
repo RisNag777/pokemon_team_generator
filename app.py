@@ -380,7 +380,7 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
     st.subheader("Team image")
     openai_key = _openai_api_key()
     st.caption(
-        "Your camera photo and **each team sprite** are sent to **OpenAI GPT Image** so one model pass can "
+        "Your photo (camera or file upload) and **each team sprite** are sent to **OpenAI GPT Image** so one model pass can "
         "pose you and your companions in a single illustration. Paid API usage applies."
     )
     if not openai_key:
@@ -396,17 +396,45 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
             st.warning(f"Could not save team to database: {save_err}")
 
     if poster_ok:
-        cam = st.camera_input(
+        photo_mode = st.radio(
             "Your photo",
-            key=f"poster_cam_{prefix}",
-            help="Sent to OpenAI for image generation only — not saved to the database.",
+            ["Take a photo", "Upload a photo"],
+            horizontal=True,
+            key=f"poster_photo_mode_{prefix}",
         )
         saved_photo = (
             st.session_state.get(f"_edit_photo_bytes_{editing_id}") if editing_id is not None else None
         )
-        if cam is not None and editing_id is not None:
-            st.session_state[f"_edit_photo_bytes_{editing_id}"] = cam.getvalue()
-        photo_for_api = cam.getvalue() if cam is not None else (saved_photo or b"")
+        cam_bytes: bytes | None = None
+        upload_bytes: bytes | None = None
+
+        if photo_mode == "Take a photo":
+            cam = st.camera_input(
+                "Camera",
+                key=f"poster_cam_{prefix}",
+                help="Sent to OpenAI for image generation only — not saved to the database.",
+            )
+            if cam is not None:
+                cam_bytes = cam.getvalue()
+                if editing_id is not None:
+                    st.session_state[f"_edit_photo_bytes_{editing_id}"] = cam_bytes
+        else:
+            up = st.file_uploader(
+                "Image file",
+                type=["png", "jpg", "jpeg", "webp"],
+                key=f"poster_upload_{prefix}",
+                help="Sent to OpenAI for image generation only — not saved to the database.",
+            )
+            if up is not None:
+                upload_bytes = up.getvalue()
+                if editing_id is not None:
+                    st.session_state[f"_edit_photo_bytes_{editing_id}"] = upload_bytes
+
+        if photo_mode == "Take a photo":
+            photo_for_api = cam_bytes if cam_bytes is not None else (saved_photo or b"")
+        else:
+            photo_for_api = upload_bytes if upload_bytes is not None else (saved_photo or b"")
+
         can_generate = openai_key and photo_for_api and len(photo_for_api) > 0
 
         if can_generate:
@@ -437,7 +465,9 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                             key=f"unified_dl_{prefix}",
                         )
         elif openai_key and not photo_for_api:
-            st.warning("Add a camera photo (or open a saved team that includes one).")
+            st.warning(
+                "Add a photo with the camera or upload (or open a saved team that already has a photo in this session)."
+            )
 
 
 def _trainer_summaries_for_view() -> list[dict[str, int | str]]:
