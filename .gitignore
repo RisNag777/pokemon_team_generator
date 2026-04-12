@@ -1,3 +1,4 @@
+.env
 pokemon_env/
 __pycache__/
 *.py[cod]

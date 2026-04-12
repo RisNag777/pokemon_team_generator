@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
+import os
 import string
+from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
 
+from pokemon_team_generator.openai_trainer_image import generate_unified_group_scene_png
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
+def _openai_api_key() -> str | None:
+    k = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    if k:
+        return k
+    try:
+        return str(st.secrets["OPENAI_API_KEY"]).strip()
+    except Exception:
+        return None
 
 
 def _display_name(slug: str) -> str:
@@ -176,6 +192,41 @@ def page_team_for_name(rows: list[dict[str, str]]) -> None:
             with col:
                 st.image(row["sprite_url"], width=96)
                 st.caption(_display_name(slug))
+
+    st.divider()
+    st.subheader("Team image")
+    openai_key = _openai_api_key()
+    st.caption(
+        "Your camera photo and **each team sprite** are sent to **OpenAI GPT Image** so one model pass can "
+        "pose you and your companions in a single illustration. Paid API usage applies."
+    )
+    if not openai_key:
+        st.info("Set **OPENAI_API_KEY** in `.env` or Streamlit secrets to generate a team image.")
+
+    poster_ok = st.checkbox("I confirm this team.", key=f"poster_confirm_{normalized}")
+
+    if poster_ok:
+        cam = st.camera_input(
+            "Your photo",
+            key=f"poster_cam_{normalized}",
+            help="Sent to OpenAI with your team’s official artwork for image generation.",
+        )
+        if cam is not None and openai_key:
+            if st.button("Generate team image", key=f"unified_{normalized}"):
+                with st.spinner("Sending photo + sprites to GPT Image for one scene…"):
+                    try:
+                        png = generate_unified_group_scene_png(openai_key, cam.getvalue(), all_picks)
+                    except Exception as e:
+                        st.error(f"Image generation failed: {e}")
+                    else:
+                        st.image(png, caption="Generated scene (references: you + official artwork)")
+                        st.download_button(
+                            "Download PNG",
+                            data=png,
+                            file_name="team_unified_scene.png",
+                            mime="image/png",
+                            key=f"unified_dl_{normalized}",
+                        )
 
 
 def main() -> None:
