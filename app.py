@@ -5,10 +5,16 @@ from __future__ import annotations
 import os
 import string
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import streamlit as st
 from dotenv import load_dotenv
 
+from pokemon_team_generator.battle_narrative import (
+    generate_battle_script,
+    load_roster_profiles,
+    ordered_team_slugs,
+)
 from pokemon_team_generator.openai_trainer_image import generate_unified_group_scene_png
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
 import sqlite3
@@ -508,6 +514,87 @@ def render_database_page() -> None:
                 st.caption("No generated image stored.")
 
 
+def render_battles_page() -> None:
+    """Pick two saved trainers as battle challengers."""
+    st.header("Battles")
+
+    teams = list_saved_teams()
+    if not teams:
+        st.info("No saved trainers yet. Build a team on **Home** and save it to the database first.")
+        return
+
+    labels = [f"{t['trainer_name']} (#{t['id']})" for t in teams]
+    id_by_label: dict[str, int] = {lab: int(t["id"]) for lab, t in zip(labels, teams, strict=True)}
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        label_a = st.selectbox("Challenger 1", options=labels, key="battle_challenger_1")
+    with col_b:
+        idx_b = 1 if len(labels) > 1 else 0
+        label_b = st.selectbox(
+            "Challenger 2",
+            options=labels,
+            index=idx_b,
+            key="battle_challenger_2",
+        )
+
+    id_a = id_by_label[label_a]
+    id_b = id_by_label[label_b]
+    if id_a == id_b:
+        st.caption("Both challengers are the same saved team.")
+
+    sel_key = (id_a, id_b)
+    if st.session_state.get("battle_sel_key") != sel_key:
+        st.session_state["battle_sel_key"] = sel_key
+        st.session_state.pop("battle_result", None)
+
+    if st.button("Battle Now", type="primary"):
+        openai_key = _openai_api_key()
+        if not openai_key:
+            st.error("Set **OPENAI_API_KEY** in `.env` or Streamlit secrets to generate a battle script.")
+        else:
+            try:
+                rec_a = get_trainer(id_a)
+                rec_b = get_trainer(id_b)
+            except KeyError as err:
+                st.error(f"That trainer row is missing: {err}")
+            else:
+                slots_a = rec_a["team_slots"]
+                slots_b = rec_b["team_slots"]
+                if not isinstance(slots_a, list) or not isinstance(slots_b, list):
+                    st.error("Invalid team data in the database.")
+                else:
+                    slugs_a = ordered_team_slugs(slots_a)
+                    slugs_b = ordered_team_slugs(slots_b)
+                    if not slugs_a or not slugs_b:
+                        st.warning("Both challengers need at least one Pokémon in their saved team slots.")
+                    else:
+                        with st.spinner("Fetching Pokédex data and writing the battle…"):
+                            try:
+                                roster_a = load_roster_profiles(slugs_a, _display_name)
+                                roster_b = load_roster_profiles(slugs_b, _display_name)
+                                script = generate_battle_script(
+                                    api_key=openai_key,
+                                    trainer_a_name=str(rec_a["trainer_name"]),
+                                    trainer_b_name=str(rec_b["trainer_name"]),
+                                    roster_a=roster_a,
+                                    roster_b=roster_b,
+                                )
+                            except (OSError, URLError, HTTPError) as net_err:
+                                st.error(f"Could not reach Pokédex data: {net_err}")
+                            except Exception as gen_err:
+                                st.error(f"Battle generation failed: {gen_err}")
+                            else:
+                                st.session_state["battle_result"] = script
+
+    battle_md = st.session_state.get("battle_result")
+    if battle_md:
+        st.divider()
+        st.subheader("Battle script")
+        st.caption(f"Model temperature **0.5** — abilities, stats, typings, moves from Pokédex; held items chosen to fit each Pokémon.")
+        st.markdown(battle_md)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Pokémon team generator",
@@ -527,6 +614,12 @@ def main() -> None:
             st.session_state["editing_id"] = None
             st.session_state.pop("draft_row_id", None)
             st.session_state.pop("trainer_name_input", None)
+            st.rerun()
+
+        if st.button("Battles", use_container_width=True):
+            st.session_state["nav_page"] = "battles"
+            st.session_state["editing_id"] = None
+            st.session_state.pop("draft_row_id", None)
             st.rerun()
 
         if st.button("View database", use_container_width=True):
@@ -555,6 +648,11 @@ def main() -> None:
     if st.session_state.get("nav_page") == "database":
         st.title("Pokémon team generator")
         render_database_page()
+        return
+
+    if st.session_state.get("nav_page") == "battles":
+        st.title("Pokémon team generator")
+        render_battles_page()
         return
 
     st.title("Pokémon team generator")
