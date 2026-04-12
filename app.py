@@ -89,6 +89,10 @@ _NO_PAREN_MULTIWORD_SLUGS: frozenset[str] = frozenset(
         "iron-leaves",
         "iron-boulder",
         "iron-crown",
+        "tapu-koko",
+        "tapu-lele",
+        "tapu-bulu",
+        "tapu-fini",
     }
 )
 
