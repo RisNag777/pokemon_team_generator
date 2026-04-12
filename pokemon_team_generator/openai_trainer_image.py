@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import base64
+import time
 from io import BytesIO
 from urllib.error import URLError
 from urllib.request import urlopen
+
+# Long timeout: image edit uploads many bytes and generation can be slow.
+_OPENAI_TIMEOUT_S = 300.0
+_OPENAI_MAX_RETRIES = 3
+_EDIT_ATTEMPTS_PER_MODEL = 3
 
 # GPT Image models accept multiple reference images via images.edit (see OpenAI docs).
 _UNIFIED_SCENE_MODELS = ("gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini")
@@ -38,6 +44,71 @@ def _build_unified_group_prompt(num_creatures: int) -> str:
     )[:8000]
 
 
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """True for likely retryable connection / timeout failures."""
+    try:
+        from openai import APIConnectionError, APITimeoutError
+
+        if isinstance(exc, (APIConnectionError, APITimeoutError)):
+            return True
+    except ImportError:
+        pass
+    name = type(exc).__name__
+    if "Connection" in name or "Timeout" in name or "ConnectError" in name:
+        return True
+    msg = str(exc).lower()
+    return any(
+        x in msg
+        for x in (
+            "connection error",
+            "connection reset",
+            "connection aborted",
+            "timed out",
+            "timeout",
+            "network is unreachable",
+            "temporary failure",
+            "ssl",
+            "remote end closed",
+        )
+    )
+
+
+def _images_edit_once(
+    client: object,
+    model: str,
+    prompt: str,
+    size: str,
+    user_photo_bytes: bytes,
+    user_suffix: str,
+    sprite_bytes_list: list[bytes],
+) -> bytes:
+    """Single images.edit call; closes stream handles in finally."""
+    streams: list[BytesIO] = [_bytesio_upload(user_photo_bytes, f"user{user_suffix}")]
+    for i, raw in enumerate(sprite_bytes_list):
+        streams.append(_bytesio_upload(raw, f"creature_{i + 1}.png"))
+    try:
+        edit_kw: dict = {
+            "model": model,
+            "image": streams,
+            "prompt": prompt,
+            "size": size,
+            "quality": "high",
+        }
+        if model != "gpt-image-1-mini":
+            edit_kw["input_fidelity"] = "high"
+        result = client.images.edit(**edit_kw)
+        b64 = result.data[0].b64_json if result.data else None
+        if not b64:
+            raise RuntimeError("GPT Image returned no image data")
+        return base64.standard_b64decode(b64)
+    finally:
+        for b in streams:
+            try:
+                b.close()
+            except Exception:
+                pass
+
+
 def generate_unified_group_scene_png(
     api_key: str,
     user_photo_bytes: bytes,
@@ -61,38 +132,37 @@ def generate_unified_group_scene_png(
             raise RuntimeError(f"Could not load sprite: {e}") from e
 
     prompt = _build_unified_group_prompt(len(picks))
-    client = OpenAI(api_key=api_key)
+    client = OpenAI(
+        api_key=api_key,
+        timeout=_OPENAI_TIMEOUT_S,
+        max_retries=_OPENAI_MAX_RETRIES,
+    )
     last_err: Exception | None = None
 
     for model in _UNIFIED_SCENE_MODELS:
-        streams: list[BytesIO] = [_bytesio_upload(user_photo_bytes, f"user{user_suffix}")]
-        for i, raw in enumerate(sprite_bytes_list):
-            streams.append(_bytesio_upload(raw, f"creature_{i + 1}.png"))
-        try:
-            # gpt-image-1-mini does not support input_fidelity high (API returns 400).
-            edit_kw: dict = {
-                "model": model,
-                "image": streams,
-                "prompt": prompt,
-                "size": size,
-                "quality": "high",
-            }
-            if model != "gpt-image-1-mini":
-                edit_kw["input_fidelity"] = "high"
-            result = client.images.edit(**edit_kw)
-            b64 = result.data[0].b64_json if result.data else None
-            if not b64:
-                raise RuntimeError("GPT Image returned no image data")
-            return base64.standard_b64decode(b64)
-        except Exception as e:
-            last_err = e
-        finally:
-            for b in streams:
-                try:
-                    b.close()
-                except Exception:
-                    pass
+        for attempt in range(_EDIT_ATTEMPTS_PER_MODEL):
+            try:
+                return _images_edit_once(
+                    client,
+                    model,
+                    prompt,
+                    size,
+                    user_photo_bytes,
+                    user_suffix,
+                    sprite_bytes_list,
+                )
+            except Exception as e:
+                last_err = e
+                if attempt < _EDIT_ATTEMPTS_PER_MODEL - 1 and _is_transient_network_error(e):
+                    time.sleep(1.5 * (2**attempt))
+                    continue
+                break
 
+    hint = (
+        " If this was a connection error, check your network, VPN, firewall, and "
+        "https://status.openai.com/ — then try again."
+    )
     raise RuntimeError(
-        f"Could not generate a unified scene with any of {list(_UNIFIED_SCENE_MODELS)}. Last error: {last_err}"
+        f"Could not generate a unified scene with any of {list(_UNIFIED_SCENE_MODELS)}. "
+        f"Last error: {last_err!s}.{hint}"
     )
