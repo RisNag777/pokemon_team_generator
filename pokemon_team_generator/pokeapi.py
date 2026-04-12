@@ -11,9 +11,12 @@ TIMEOUT_S = 60
 
 
 def _is_excluded_form(name: str) -> bool:
-    """True if the slug is Mega, Gigantamax, or Totem (Alola boss) variant."""
+    """True if the slug is Mega, Gigantamax, Totem, or Starter (e.g. Let's Go partner) variant."""
     n = name.lower()
-    return "-mega" in n or "-gmax" in n or "-totem" in n
+    if "-mega" in n or "-gmax" in n or "-totem" in n:
+        return True
+    # e.g. pikachu-starter, eevee-starter — list UI would show "Pikachu (Starter)".
+    return n.endswith("-starter")
 
 
 def _official_artwork_url_from_list_url(list_url: str) -> str:
