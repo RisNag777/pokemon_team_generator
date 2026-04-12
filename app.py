@@ -49,12 +49,49 @@ _EXACT_DISPLAY_NAMES: dict[str, str] = {
     "mr-rime": "Mr. Rime",
 }
 
+# Slugs with multiple words in the official name but no form suffix in parentheses (e.g. paradox Pokémon).
+_NO_PAREN_MULTIWORD_SLUGS: frozenset[str] = frozenset(
+    {
+        "great-tusk",
+        "scream-tail",
+        "brute-bonnet",
+        "flutter-mane",
+        "slither-wing",
+        "sandy-shocks",
+        "roaring-moon",
+        "walking-wake",
+        "gouging-fire",
+        "raging-bolt",
+        "iron-treads",
+        "iron-bundle",
+        "iron-hands",
+        "iron-jugulis",
+        "iron-moth",
+        "iron-thorns",
+        "iron-valiant",
+        "iron-leaves",
+        "iron-boulder",
+        "iron-crown",
+    }
+)
+
+
+def _default_display_name(slug: str) -> str:
+    """Title-case hyphen → spaces; put all text after the first word in parentheses."""
+    s = slug.replace("-", " ").title()
+    if " " not in s:
+        return s
+    if slug in _NO_PAREN_MULTIWORD_SLUGS:
+        return s
+    first, rest = s.split(" ", 1)
+    return f"{first} ({rest})"
+
 
 def _display_name(slug: str) -> str:
     """Format PokeAPI slug for display."""
     if slug in _EXACT_DISPLAY_NAMES:
         return _EXACT_DISPLAY_NAMES[slug]
-    return slug.replace("-", " ").title()
+    return _default_display_name(slug)
 
 
 def _letters_a_to_z(raw: str) -> list[str]:
