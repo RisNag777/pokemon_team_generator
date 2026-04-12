@@ -25,8 +25,35 @@ def _openai_api_key() -> str | None:
         return None
 
 
+# Exact UI strings where plain title-case is wrong: hyphens, accents, apostrophes, Mr./Jr., or Nidoran symbols.
+_EXACT_DISPLAY_NAMES: dict[str, str] = {
+    "nidoran-f": "Nidoran♀",
+    "nidoran-m": "Nidoran♂",
+    "farfetchd": "Farfetch'd",
+    "farfetchd-galar": "Farfetch'd Galar",
+    "sirfetchd": "Sirfetch'd",
+    "flabebe": "Flabébé",
+    "type-null": "Type: Null",
+    "ho-oh": "Ho-Oh",
+    "porygon-z": "Porygon-Z",
+    "jangmo-o": "Jangmo-o",
+    "hakamo-o": "Hakamo-o",
+    "kommo-o": "Kommo-o",
+    "ting-lu": "Ting-Lu",
+    "chien-pao": "Chien-Pao",
+    "wo-chien": "Wo-Chien",
+    "chi-yu": "Chi-Yu",
+    "mr-mime": "Mr. Mime",
+    "mr-mime-galar": "Mr. Mime Galar",
+    "mime-jr": "Mime Jr.",
+    "mr-rime": "Mr. Rime",
+}
+
+
 def _display_name(slug: str) -> str:
-    """Format PokeAPI slug for display (hyphens as word breaks, title case)."""
+    """Format PokeAPI slug for display."""
+    if slug in _EXACT_DISPLAY_NAMES:
+        return _EXACT_DISPLAY_NAMES[slug]
     return slug.replace("-", " ").title()
 
 
