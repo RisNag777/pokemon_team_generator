@@ -1,18 +1,11 @@
 """Streamlit UI: build a Pokémon team from your name (PokeAPI v2)."""
 
 from __future__ import annotations
-
-import os
-import string
-from pathlib import Path
-
-import streamlit as st
 from dotenv import load_dotenv
+from pathlib import Path
 
 from pokemon_team_generator.openai_trainer_image import generate_unified_group_scene_png
 from pokemon_team_generator.pokeapi import iter_pokemon_list_entries
-import sqlite3
-
 from pokemon_team_generator.trainer_db import (
     db_path,
     delete_trainer,
@@ -24,18 +17,16 @@ from pokemon_team_generator.trainer_db import (
     update_trainer_fields,
 )
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+import os
+import sqlite3
+import streamlit as st
+import string
 
+load_dotenv(Path(__file__).with_name(".env"))
 
 def _openai_api_key() -> str | None:
     k = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    if k:
-        return k
-    try:
-        return str(st.secrets["OPENAI_API_KEY"]).strip()
-    except Exception:
-        return None
-
+    return k or None
 
 # Exact UI strings where plain title-case is wrong: hyphens, accents, apostrophes, Mr./Jr., or Nidoran symbols.
 _EXACT_DISPLAY_NAMES: dict[str, str] = {
@@ -91,119 +82,59 @@ _NO_PAREN_MULTIWORD_SLUGS: frozenset[str] = frozenset(
     }
 )
 
-
-def _default_display_name(slug: str) -> str:
-    """Title-case hyphen → spaces; put all text after the first word in parentheses."""
-    s = slug.replace("-", " ").title()
-    if " " not in s:
-        return s
-    if slug in _NO_PAREN_MULTIWORD_SLUGS:
-        return s
-    first, rest = s.split(" ", 1)
-    return f"{first} ({rest})"
-
-
 def _display_name(slug: str) -> str:
     """Format PokeAPI slug for display."""
     if slug in _EXACT_DISPLAY_NAMES:
         return _EXACT_DISPLAY_NAMES[slug]
-    return _default_display_name(slug)
+    s = slug.replace("-", " ").title()
+    if " " not in s or slug in _NO_PAREN_MULTIWORD_SLUGS:
+        return s
+    first, rest = s.split(" ", 1)
+    return f"{first} ({rest})"
 
-
-def _letters_a_to_z(raw: str) -> list[str]:
-    """Uppercase A–Z letters only (English Pokédex slugs)."""
-    return [c.upper() for c in raw if c.upper() in string.ascii_uppercase]
-
-
-def _team_state_prefix(editing_id: int | None, normalized: str) -> str:
-    """Session prefix: stable while editing a saved row; otherwise tied to the current name letters."""
-    if editing_id is not None:
-        return f"edit_{editing_id}"
-    return normalized
-
-
-def _checkbox_key(prefix: str, slot_i: int, slug: str) -> str:
-    """Session-state key for one Pokémon checkbox (slot = letter index in name)."""
-    return f"team_cb_{prefix}_{slot_i}_{slug}"
-
-
-def _dropdown_key(prefix: str, slot_i: int) -> str:
-    """Session-state key for the per-letter selectbox."""
-    return f"team_dd_{prefix}_{slot_i}"
-
-
-def _revealed_key(prefix: str, slot_i: int) -> str:
-    """Session-state key for slugs added via dropdown (shown in checkbox section)."""
-    return f"team_revealed_{prefix}_{slot_i}"
-
+def _team_widget_key(widget: str, prefix: str, slot_i: int, slug: str | None = None) -> str:
+    """Streamlit session key: ``widget`` is ``cb`` (checkbox; pass ``slug``), ``dd``, or ``revealed``."""
+    base = f"team_{widget}_{prefix}_{slot_i}"
+    return f"{base}_{slug}" if slug is not None else base
 
 # Not a valid Pokédex slug — used as the selectbox default / reset value.
 _DROPDOWN_PLACEHOLDER = "— Choose a Pokémon —"
-
 
 @st.cache_data(ttl=3600, show_spinner="Loading Pokédex from PokeAPI…")
 def all_pokemon_rows() -> list[dict[str, str]]:
     return sorted(iter_pokemon_list_entries(), key=lambda r: r["name"])
 
-
-def _matches_for_letter(rows: list[dict[str, str]], letter: str) -> list[dict[str, str]]:
-    prefix = letter.lower()
-    return [r for r in rows if r["name"].startswith(prefix)]
-
-
-def _collect_team_slots(prefix: str, n_letters: int) -> list[list[str]]:
-    return [list(st.session_state.get(_revealed_key(prefix, i), [])) for i in range(n_letters)]
-
-
-def _persist_team_confirm_to_db(
+def _persist_trainer_to_db(
     editing_id: int | None,
     trainer_name: str,
     team_slots: list[list[str]],
-) -> None:
-    """Insert or update DB row when the user confirms their team."""
-    if editing_id is not None:
-        update_trainer_fields(editing_id, trainer_name=trainer_name, team_slots=team_slots)
-        return
-    draft = st.session_state.get("draft_row_id")
-    if draft is not None:
-        update_trainer_fields(int(draft), trainer_name=trainer_name, team_slots=team_slots)
-        return
-    rid = insert_draft_trainer(trainer_name, team_slots)
-    st.session_state["draft_row_id"] = int(rid)
-
-
-def _persist_generated_image_to_db(
-    editing_id: int | None,
-    trainer_name: str,
-    team_slots: list[list[str]],
-    png: bytes,
+    *,
+    team_image_png: bytes | None = None,
 ) -> int:
     """
-    Write the generated PNG to team_image_blob (user camera image is not stored).
-    Creates a full row if none exists yet for this session.
+    Insert or update the trainer row (edit id, else session draft, else new insert).
+    Pass ``team_image_png`` to set the generated scene; omit it on team-only confirm so the
+    image column is left unchanged on UPDATE. User camera bytes are never stored.
     """
-    if editing_id is not None:
-        update_trainer_fields(
-            editing_id,
-            trainer_name=trainer_name,
-            team_slots=team_slots,
-            team_image_png=png,
-        )
-        return int(editing_id)
     draft = st.session_state.get("draft_row_id")
-    if draft is not None:
-        rid = int(draft)
-        update_trainer_fields(
-            rid,
-            trainer_name=trainer_name,
-            team_slots=team_slots,
-            team_image_png=png,
-        )
-        return rid
-    rid = save_trainer_team(trainer_name, team_slots, png)
+    row_id = editing_id if editing_id is not None else (int(draft) if draft is not None else None)
+    if row_id is not None:
+        if team_image_png is not None:
+            update_trainer_fields(
+                row_id,
+                trainer_name=trainer_name,
+                team_slots=team_slots,
+                team_image_png=team_image_png,
+            )
+        else:
+            update_trainer_fields(row_id, trainer_name=trainer_name, team_slots=team_slots)
+        return int(row_id)
+    if team_image_png is not None:
+        rid = save_trainer_team(trainer_name, team_slots, team_image_png)
+    else:
+        rid = insert_draft_trainer(trainer_name, team_slots)
     st.session_state["draft_row_id"] = int(rid)
     return int(rid)
-
 
 def render_team_page(rows: list[dict[str, str]]) -> None:
     editing_id: int | None = st.session_state.get("editing_id")
@@ -219,17 +150,17 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                 return
             pfx = f"edit_{editing_id}"
             name = str(rec["trainer_name"])
-            letters_load = _letters_a_to_z(name)
+            letters_load = [c.upper() for c in name if c.upper() in string.ascii_uppercase]
             slots: list[list[str]] = [list(s) for s in (rec["team_slots"] or [])]
             while len(slots) < len(letters_load):
                 slots.append([])
             for i in range(len(letters_load)):
-                rv = _revealed_key(pfx, i)
+                rv = _team_widget_key("revealed", pfx, i)
                 sl = slots[i] if i < len(slots) else []
                 st.session_state[rv] = list(sl)
                 for slug in sl:
-                    st.session_state[_checkbox_key(pfx, i, slug)] = True
-                dd_reroll = f"{_dropdown_key(pfx, i)}_reroll"
+                    st.session_state[_team_widget_key("cb", pfx, i, slug)] = True
+                dd_reroll = f"{_team_widget_key('dd', pfx, i)}_reroll"
                 st.session_state[dd_reroll] = st.session_state.get(dd_reroll, 0) + 1
             st.session_state["trainer_name_input"] = name
             st.session_state.pop(f"_edit_photo_bytes_{editing_id}", None)
@@ -253,9 +184,9 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
         max_chars=64,
         key="trainer_name_input",
     )
-    letters = _letters_a_to_z(raw_name)
+    letters = [c.upper() for c in raw_name if c.upper() in string.ascii_uppercase]
     normalized = "".join(c.lower() for c in letters)
-    prefix = _team_state_prefix(editing_id, normalized)
+    prefix = f"edit_{editing_id}" if editing_id is not None else normalized
 
     if not raw_name.strip():
         st.info("Enter a name to build your team.")
@@ -271,7 +202,7 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
     all_picks: list[tuple[str, dict[str, str]]] = []
 
     for i, letter in enumerate(letters):
-        matches = _matches_for_letter(rows, letter)
+        matches = [r for r in rows if r["name"].startswith(letter.lower())]
         if not matches:
             st.warning(f"No Pokémon found for letter {letter} (position {i + 1}).")
             continue
@@ -280,17 +211,17 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
 
         st.markdown(f"**Letter {letter}** — pick {i + 1} of {len(letters)}")
 
-        revealed_key = _revealed_key(prefix, i)
+        revealed_key = _team_widget_key("revealed", prefix, i)
         if revealed_key not in st.session_state:
             st.session_state[revealed_key] = []
         st.session_state[revealed_key] = [s for s in st.session_state[revealed_key] if s in slugs]
         st.session_state[revealed_key] = [
             s
             for s in st.session_state[revealed_key]
-            if st.session_state.get(_checkbox_key(prefix, i, s), False)
+            if st.session_state.get(_team_widget_key("cb", prefix, i, s), False)
         ]
 
-        dd_key = _dropdown_key(prefix, i)
+        dd_key = _team_widget_key("dd", prefix, i)
         dd_reroll_key = f"{dd_key}_reroll"
         dd_widget_key = f"{dd_key}__{st.session_state.get(dd_reroll_key, 0)}"
         dd_options = [_DROPDOWN_PLACEHOLDER] + slugs
@@ -312,7 +243,7 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                 picked = st.session_state.get(wk, _DROPDOWN_PLACEHOLDER)
                 if picked == _DROPDOWN_PLACEHOLDER or picked not in slug_list:
                     return
-                ck = _checkbox_key(pfx, slot, picked)
+                ck = _team_widget_key("cb", pfx, slot, picked)
                 revealed: list[str] = list(st.session_state.get(rv_key, []))
                 already_added = picked in revealed and st.session_state.get(ck, False)
                 if already_added:
@@ -343,7 +274,7 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
         else:
             for slug in revealed_slugs:
                 r = slug_to_row[slug]
-                ck = _checkbox_key(prefix, i, slug)
+                ck = _team_widget_key("cb", prefix, i, slug)
                 img_col, box_col = st.columns([0.11, 0.89])
                 with img_col:
                     st.image(r["sprite_url"], width=48)
@@ -383,10 +314,13 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
 
     poster_ok = st.checkbox("I confirm this team.", key=f"poster_confirm_{prefix}")
 
-    team_slots_live = _collect_team_slots(prefix, len(letters))
+    team_slots_live = [
+        list(st.session_state.get(_team_widget_key("revealed", prefix, i), []))
+        for i in range(len(letters))
+    ]
     if poster_ok:
         try:
-            _persist_team_confirm_to_db(editing_id, raw_name.strip(), team_slots_live)
+            _persist_trainer_to_db(editing_id, raw_name.strip(), team_slots_live)
         except Exception as save_err:
             st.warning(f"Could not save team to database: {save_err}")
 
@@ -440,13 +374,12 @@ def render_team_page(rows: list[dict[str, str]]) -> None:
                     except Exception as e:
                         st.error(f"Image generation failed: {e}")
                     else:
-                        team_slots = _collect_team_slots(prefix, len(letters))
                         try:
-                            row_id = _persist_generated_image_to_db(
+                            row_id = _persist_trainer_to_db(
                                 editing_id,
                                 raw_name.strip(),
-                                team_slots,
-                                png,
+                                team_slots_live,
+                                team_image_png=png,
                             )
                             st.success(f"Generated image saved to database (row **{row_id}**).")
                         except Exception as save_err:

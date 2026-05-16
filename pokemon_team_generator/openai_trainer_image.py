@@ -14,7 +14,16 @@ _OPENAI_MAX_RETRIES = 3
 _EDIT_ATTEMPTS_PER_MODEL = 3
 
 # GPT Image models accept multiple reference images via images.edit (see OpenAI docs).
-_UNIFIED_SCENE_MODELS = ("gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini")
+# Order: newest / best first; fall through on failure.
+_UNIFIED_SCENE_MODELS = (
+    "gpt-image-2",
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
+    "chatgpt-image-latest",
+)
+# input_fidelity is unsupported on these models (gpt-image-2 is always high-fidelity).
+_NO_INPUT_FIDELITY_MODELS = frozenset({"gpt-image-1-mini", "gpt-image-2"})
 
 
 def _bytesio_upload(data: bytes, filename: str) -> BytesIO:
@@ -42,6 +51,31 @@ def _build_unified_group_prompt(num_creatures: int) -> str:
         "Consistent warm lighting and soft shadows on all figures. Wholesome, non-violent adventure mood. "
         "No text, no watermarks, no logos, no real celebrity names."
     )[:8000]
+
+
+def _is_moderation_blocked(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "moderation_blocked" in msg or "rejected by the safety system" in msg
+
+
+def _is_client_kwarg_error(exc: BaseException) -> bool:
+    """SDK/client mismatch — retrying other models won't help."""
+    return isinstance(exc, TypeError) and "unexpected keyword argument" in str(exc)
+
+
+def _is_invalid_model_error(exc: BaseException) -> bool:
+    """Skip to the next model when this one isn't available on the account."""
+    msg = str(exc).lower()
+    return any(
+        x in msg
+        for x in (
+            "does not exist",
+            "model_not_found",
+            "is not supported",
+            "unknown model",
+            "invalid model",
+        )
+    )
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -94,7 +128,7 @@ def _images_edit_once(
             "size": size,
             "quality": "high",
         }
-        if model != "gpt-image-1-mini":
+        if model not in _NO_INPUT_FIDELITY_MODELS:
             edit_kw["input_fidelity"] = "high"
         result = client.images.edit(**edit_kw)
         b64 = result.data[0].b64_json if result.data else None
@@ -153,10 +187,24 @@ def generate_unified_group_scene_png(
                 )
             except Exception as e:
                 last_err = e
+                if _is_client_kwarg_error(e):
+                    raise RuntimeError(
+                        f"OpenAI client call failed before reaching the API: {e}"
+                    ) from e
+                if _is_invalid_model_error(e):
+                    break
                 if attempt < _EDIT_ATTEMPTS_PER_MODEL - 1 and _is_transient_network_error(e):
                     time.sleep(1.5 * (2**attempt))
                     continue
                 break
+
+    if last_err is not None and _is_moderation_blocked(last_err):
+        raise RuntimeError(
+            f"Could not generate a unified scene with any of {list(_UNIFIED_SCENE_MODELS)}. "
+            f"Last error: {last_err!s}. "
+            "OpenAI's safety filter blocked the request — try a different photo, fewer Pokémon, "
+            "or contact help.openai.com with the request ID from the error."
+        ) from last_err
 
     hint = (
         " If this was a connection error, check your network, VPN, firewall, and "
@@ -165,4 +213,4 @@ def generate_unified_group_scene_png(
     raise RuntimeError(
         f"Could not generate a unified scene with any of {list(_UNIFIED_SCENE_MODELS)}. "
         f"Last error: {last_err!s}.{hint}"
-    )
+    ) from last_err
